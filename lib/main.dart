@@ -16,7 +16,31 @@ class Home extends StatelessWidget {
           child: Text("START PROXY"),
 
           onPressed: () async {
-            await channel.invokeMethod("start");
+              print("FLUTTER: button pressed");
+              await channel.invokeMethod("start");
+              print("FLUTTER: method completed");
+
+              if (context.mounted) {
+                  showDialog(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                          title: Text("Разрешите фоновую работу"),
+                          content: Text(
+                              "Для работы прокси в фоне:\n\n"
+                              "1. Настройки → Приложения → tg_proxy\n"
+                              "2. Батарея → Без ограничений\n"
+                              "3. Или: Настройки → Управление приложениями → "
+                              "Автозапуск → включить tg_proxy"
+                          ),
+                          actions: [
+                              TextButton(
+                                  onPressed: () => Navigator.pop(ctx),
+                                  child: Text("Понял"),
+                              )
+                          ],
+                      ),
+                  );
+              }
           },
         ),
       ),

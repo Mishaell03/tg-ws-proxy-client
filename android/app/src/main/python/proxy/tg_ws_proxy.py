@@ -33,14 +33,19 @@ from ._aes import Cipher, algorithms, modes
 
 log = logging.getLogger('tg-mtproto-proxy')
 
-IP_FAIL_COOLDOWN = 3600.0
-DC_FAIL_COOLDOWN = 60.0
-WS_FAIL_TIMEOUT = 2.0
-LISTENER_CHECK_INTERVAL = 5.0
+IP_FAIL_COOLDOWN = 5.0
+DC_FAIL_COOLDOWN = 1.0
+WS_FAIL_TIMEOUT = 15.0
+LISTENER_CHECK_INTERVAL = 30.0
 LISTENER_RESTART_DELAY = 1.0
+WS_WAKER_INTERVAL = 1.0
+
 ws_blacklist: Set[str] = set()
 dc_fail_until: Dict[str, float] = {}
 ip_fail_until: Dict[str, float] = {}
+_global_loop: Optional[asyncio.AbstractEventLoop] = None
+_restart_event: Optional[asyncio.Event] = None
+_last_activity = 0.0
 
 
 def _try_handshake(handshake: bytes, secret: bytes) -> Optional[Tuple[int, bool, bytes, bytes]]:
@@ -331,7 +336,7 @@ async def _handle_client(reader, writer, secret: bytes):
                             label, dc, media_tag)
             return
 
-        ws_timeout = WS_FAIL_TIMEOUT if now < dc_fail_until.get(dc_key, 0) else 5.0
+        ws_timeout = WS_FAIL_TIMEOUT if now < dc_fail_until.get(dc_key, 0) else 15.0
 
         domains = ws_domains(dc, is_media)
         ws = None
@@ -458,6 +463,14 @@ _server_stop_event = None
 _client_tasks: Set[asyncio.Task] = set()
 
 
+async def _noop_waker():
+    try:
+        while True:
+            await asyncio.sleep(WS_WAKER_INTERVAL)
+    except asyncio.CancelledError:
+        raise
+
+
 async def _run(stop_event: Optional[asyncio.Event] = None):
     global _server_instance, _server_stop_event
     _server_stop_event = stop_event
@@ -483,7 +496,12 @@ async def _run(stop_event: Optional[asyncio.Event] = None):
         _client_tasks.add(task)
         task.add_done_callback(_client_tasks.discard)
 
-    server = await asyncio.start_server(client_cb, proxy_config.host, proxy_config.port)
+    server = await asyncio.start_server(
+        client_cb,
+        proxy_config.host,
+        proxy_config.port,
+        reuse_address=True
+    )
     _server_instance = server
 
     for sock in server.sockets:
@@ -538,6 +556,7 @@ async def _run(stop_event: Optional[asyncio.Event] = None):
             raise
 
     log_stats_task = asyncio.create_task(log_stats())
+    waker_task = asyncio.create_task(_noop_waker())
 
     await ws_pool.warmup()
     await cf_worker_pool.warmup()
@@ -552,68 +571,43 @@ async def _run(stop_event: Optional[asyncio.Event] = None):
 
     try:
         while True:
-            serve_task = asyncio.create_task(server.serve_forever())
-            stop_task = (asyncio.create_task(stop_event.wait())
-                         if stop_event else None)
-
-            async def _listener_watchdog():
-                while True:
-                    await asyncio.sleep(LISTENER_CHECK_INTERVAL)
-                    socks = server.sockets
-                    if not socks or all(s.fileno() < 0 for s in socks):
-                        return
-
-            watchdog_task = asyncio.create_task(_listener_watchdog())
-            waiters = [serve_task, watchdog_task]
-            if stop_task is not None:
-                waiters.append(stop_task)
-
-            done, _ = await asyncio.wait(
-                waiters, return_when=asyncio.FIRST_COMPLETED)
-
-            if stop_task is not None and stop_task in done:
-                for task in list(_client_tasks):
-                    task.cancel()
-                if _client_tasks:
-                    await asyncio.gather(
-                        *_client_tasks, return_exceptions=True)
-                await _quiet_cancel(watchdog_task)
-                await _quiet_cancel(serve_task)
-                server.close()
-                await server.wait_closed()
-                break
-
-            await _quiet_cancel(watchdog_task)
-            await _quiet_cancel(serve_task)
-            log.warning(
-                "Listening socket died, restarting server")
-            server.close()
             try:
+                await server.serve_forever()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logging.warning(f"PYTHON: serve_forever crashed: {e}")
+
+            socks = server.sockets
+
+            if socks and all(sock.fileno() >= 0 for sock in socks):
+                continue
+
+            try:
+                server.close()
                 await server.wait_closed()
             except Exception:
                 pass
-            await asyncio.sleep(LISTENER_RESTART_DELAY)
+
+            await asyncio.sleep(1)
+
             try:
                 server = await asyncio.start_server(
-                    client_cb, proxy_config.host, proxy_config.port)
-            except OSError as exc:
-                log.error("Failed to restart server: %s", repr(exc))
-                break
-            _server_instance = server
-            for sock in server.sockets:
-                try:
-                    sock.setsockopt(
-                        _socket.IPPROTO_TCP, _socket.TCP_NODELAY, 1)
-                except (OSError, AttributeError):
-                    pass
-            log.warning("Server restored, listening on %s:%d",
-                        proxy_config.host, proxy_config.port)
+                    client_cb,
+                    proxy_config.host,
+                    proxy_config.port,
+                    reuse_address=True
+                )
+                _server_instance = server
+            except Exception as e:
+                logging.error(f"PYTHON: recreate failed {e}")
+                await asyncio.sleep(5)
+    except asyncio.CancelledError:
+        raise
     finally:
-        log_stats_task.cancel()
-        try:
-            await log_stats_task
-        except asyncio.CancelledError:
-            pass
+        await _quiet_cancel(waker_task)
+        await _quiet_cancel(log_stats_task)
+
         try:
             server.close()
             await server.wait_closed()
@@ -739,18 +733,92 @@ def main():
     except KeyboardInterrupt:
         log.info("Shutting down. Final stats: %s", stats.summary())
 
-# для запуска android функция, которая открывает доступ к apk из другого приложения
+
+def update_activity():
+    global _last_activity
+    _last_activity = time.time()
+
+
+async def _keepalive_ping():
+    global _last_activity
+    _last_activity = time.time()
+    ws_blacklist.clear()
+    dc_fail_until.clear()
+    ip_fail_until.clear()
+    ws_pool.reset()
+    cf_worker_pool.reset()
+    done_tasks = {t for t in _client_tasks if t.done()}
+    _client_tasks.difference_update(done_tasks)
+    logging.info(f"PROXY: keepalive ping, tasks={len(_client_tasks)}, cleaned={len(done_tasks)}")
+    print(f"PROXY: keepalive ping, tasks={len(_client_tasks)}")
+
+
+def android_keepalive():
+    global _global_loop
+    if _global_loop is not None and _global_loop.is_running():
+        _global_loop.call_soon_threadsafe(lambda: asyncio.create_task(_keepalive_ping()))
+        print("PROXY: keepalive via call_soon_threadsafe")
+    else:
+        print("PROXY: event loop not running!")
+
+
+def get_last_activity() -> float:
+    return _last_activity
+
+
 def android_start():
+    import traceback
+    import logging
+    global _global_loop
 
-    proxy_config.host = "0.0.0.0"
-    proxy_config.port = 1443
+    log_path = "/data/data/com.example.tg_proxy/files/proxy.log"
+    file_handler = logging.FileHandler(log_path, mode='a')
+    file_handler.setFormatter(logging.Formatter('%(asctime)s %(message)s'))
+    logging.getLogger().addHandler(file_handler)
+    logging.getLogger().setLevel(logging.DEBUG)
 
-    proxy_config.dc_redirects = {
-        2: "149.154.167.220",
-        4: "149.154.167.220"
-    }
+    print("PROXY: android_start called")
+    logging.info("PROXY: android_start called")
 
-    asyncio.run(_run())
+    try:
+        proxy_config.host = "0.0.0.0"
+        proxy_config.port = 1443
+        proxy_config.secret = "5ffd11a0e7765ff28e394636f2d29d17"
+        proxy_config.dc_redirects = parse_dc_ip_list([
+            '1:149.154.175.53',
+            '2:149.154.167.220',
+            '3:149.154.175.100',
+            '4:149.154.167.220',
+            '5:91.108.56.130',
+        ])
+        proxy_config.fallback_cfproxy = True
+        proxy_config.cfproxy_user_domains = []
+        proxy_config.cfproxy_worker_domains = []
+        proxy_config.pool_size = 0
+        proxy_config.buffer_size = 256 * 1024
+        proxy_config.fake_tls_domain = ""
+        proxy_config.proxy_protocol = False
+        proxy_config.force_test_dc = False
+
+        if _global_loop is not None and _global_loop.is_running():
+            logging.info("PROXY: loop already running, skip")
+            print("PROXY: loop already running, skip")
+            return
+
+        logging.info("PROXY: starting event loop")
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        _global_loop = loop
+        loop.run_until_complete(_run())
+        logging.info("PROXY: event loop exited")
+    except Exception as e:
+        logging.error(f"PROXY ERROR: {e}\n{traceback.format_exc()}")
+        print(f"PROXY ERROR: {e}")
+        traceback.print_exc()
+    finally:
+        _global_loop = None
+        logging.info("PROXY: android_start finished")
+
 
 if __name__ == '__main__':
     main()
