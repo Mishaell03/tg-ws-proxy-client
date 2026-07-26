@@ -1,0 +1,56 @@
+﻿{
+  "appTitle": "TG Proxy",
+  "appSubtitle": "Fast and secure connection for Telegram",
+
+  "openTelegram": "Open Telegram",
+  "telegramOpenFailed": "Could not open Telegram",
+
+  "connecting": "Connecting...",
+  "connected": "Connected",
+  "disconnected": "Disconnected",
+
+  "proxyActive": "Proxy Active",
+  "proxyInactive": "Proxy Inactive",
+
+  "start": "Start",
+  "stop": "Stop",
+
+  "settingsTitle": "Settings",
+  "themeTooltip": "Change theme",
+  "settingsSavedRestarted": "Settings saved. Proxy restarted.",
+  "settingsSaved": "Settings saved",
+  "logsExported": "Logs exported",
+  "retry": "Retry",
+  "exportLogs": "Export logs",
+
+  "listenerSection": "Listener",
+  "hostLabel": "Host",
+  "portLabel": "Port",
+  "secretLabel": "Secret",
+  "generateSecret": "Generate secret",
+  "validationRequired": "Required field",
+  "validationRange": "Enter a value from {min} to {max}",
+  "@validationRange": {
+    "placeholders": {
+      "min": { "type": "int" },
+      "max": { "type": "int" }
+    }
+  },
+  "validationSecret": "Secret must start with dd and contain 32 hex characters after it",
+
+  "telegramDataCentersSection": "Telegram data centers",
+  "dcIpLabel": "DC IP",
+
+  "websocketBridgeSection": "WebSocket bridge",
+  "bufferKbLabel": "Buffer, KB",
+  "poolSizeLabel": "Pool size",
+  "keepaliveLabel": "Keepalive interval",
+
+  "cloudflareSection": "Cloudflare",
+  "cloudflareFallback": "Cloudflare fallback",
+  "cloudflareDomainsLabel": "Cloudflare domains",
+  "workerDomainsLabel": "Worker domains",
+  "forceTestDc": "Force test DC",
+
+  "saveSettings": "Save settings"
+}

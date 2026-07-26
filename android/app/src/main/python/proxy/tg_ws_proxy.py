@@ -9,6 +9,7 @@ import hashlib
 import argparse
 import logging
 import logging.handlers
+import json
 import socket as _socket
 
 from typing import Dict, Optional, Set, Tuple
@@ -836,7 +837,7 @@ def _configure_android_logging(log_path: str):
             return
 
     handler = logging.handlers.RotatingFileHandler(
-        log_path, maxBytes=2 * 1024 * 1024, backupCount=2)
+        log_path, maxBytes=16 * 1024, backupCount=1)
     handler._tg_proxy_android_log = True
     handler.setFormatter(logging.Formatter(
         '%(asctime)s %(levelname)s %(name)s: %(message)s'))
@@ -845,7 +846,8 @@ def _configure_android_logging(log_path: str):
 
 def android_start(log_path: Optional[str] = None,
                   heartbeat_path: Optional[str] = None,
-                  is_cellular: bool = False):
+                  is_cellular: bool = False,
+                  config_json: Optional[str] = None):
     import traceback
     global _global_loop, _android_stop_event, _android_heartbeat_path
 
@@ -861,26 +863,35 @@ def android_start(log_path: Optional[str] = None,
     loop = None
 
     try:
-        proxy_config.host = "127.0.0.1"
-        proxy_config.port = 1443
-        proxy_config.secret = "5ffd11a0e7765ff28e394636f2d29d17"
-        proxy_config.dc_redirects = parse_dc_ip_list([
+        settings = json.loads(config_json) if config_json else {}
+        default_dc_ips = [
             '1:149.154.175.53',
             '2:149.154.167.220',
             '3:149.154.175.100',
             '4:149.154.167.220',
             '5:91.108.56.130',
             '203:91.105.192.100',
-        ])
-        proxy_config.fallback_cfproxy = True
+        ]
+        proxy_config.host = str(settings.get('host', '127.0.0.1')).strip()
+        proxy_config.port = int(settings.get('port', 1443))
+        proxy_config.secret = str(settings.get(
+            'secret', '5ffd11a0e7765ff28e394636f2d29d17')).strip().lower()
+        proxy_config.dc_redirects = parse_dc_ip_list(
+            settings.get('dcIp', default_dc_ips))
+        proxy_config.fallback_cfproxy = bool(settings.get('cfProxy', True))
         proxy_config.prefer_cfproxy = bool(is_cellular)
-        proxy_config.cfproxy_user_domains = []
-        proxy_config.cfproxy_worker_domains = []
-        proxy_config.pool_size = 2
-        proxy_config.buffer_size = 256 * 1024
+        proxy_config.cfproxy_user_domains = coerce_domain_list(
+            settings.get('cfProxyDomains', []))
+        proxy_config.cfproxy_worker_domains = coerce_domain_list(
+            settings.get('cfWorkerDomains', []))
+        proxy_config.pool_size = max(0, int(settings.get('poolSize', 2)))
+        proxy_config.buffer_size = max(
+            4, int(settings.get('bufferKb', 256))) * 1024
         proxy_config.fake_tls_domain = ""
         proxy_config.proxy_protocol = False
-        proxy_config.force_test_dc = False
+        proxy_config.force_test_dc = bool(settings.get('forceTestDc', False))
+        proxy_config.ws_keepalive_interval = max(
+            0, int(settings.get('wsKeepaliveInterval', 30)))
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)

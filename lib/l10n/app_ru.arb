@@ -1,0 +1,56 @@
+﻿{
+  "appTitle": "TG Proxy",
+  "appSubtitle": "Быстрое и безопасное подключение к Telegram",
+
+  "openTelegram": "Открыть Telegram",
+  "telegramOpenFailed": "Не удалось открыть Telegram",
+
+  "connecting": "Подключение...",
+  "connected": "Подключено",
+  "disconnected": "Отключено",
+
+  "proxyActive": "Прокси активен",
+  "proxyInactive": "Прокси неактивен",
+
+  "start": "Включить",
+  "stop": "Выключить",
+
+  "settingsTitle": "Настройки",
+  "themeTooltip": "Сменить тему",
+  "settingsSavedRestarted": "Настройки сохранены. Прокси перезапущен.",
+  "settingsSaved": "Настройки сохранены",
+  "logsExported": "Логи экспортированы",
+  "retry": "Повторить",
+  "exportLogs": "Экспорт логов",
+
+  "listenerSection": "Слушатель",
+  "hostLabel": "Хост",
+  "portLabel": "Порт",
+  "secretLabel": "Ключ",
+  "generateSecret": "Сгенерировать ключ",
+  "validationRequired": "Обязательное поле",
+  "validationRange": "Введите значение от {min} до {max}",
+  "@validationRange": {
+    "placeholders": {
+      "min": { "type": "int" },
+      "max": { "type": "int" }
+    }
+  },
+  "validationSecret": "Ключ должен начинаться с dd и содержать 32 hex-символа после него",
+
+  "telegramDataCentersSection": "Дата-центры Telegram",
+  "dcIpLabel": "IP дата-центра",
+
+  "websocketBridgeSection": "WebSocket-мост",
+  "bufferKbLabel": "Буфер, КБ",
+  "poolSizeLabel": "Размер пула",
+  "keepaliveLabel": "Интервал keepalive",
+
+  "cloudflareSection": "Cloudflare",
+  "cloudflareFallback": "Резерв через Cloudflare",
+  "cloudflareDomainsLabel": "Домены Cloudflare",
+  "workerDomainsLabel": "Домены Worker",
+  "forceTestDc": "Принудительно тестовый DC",
+
+  "saveSettings": "Сохранить настройки"
+}

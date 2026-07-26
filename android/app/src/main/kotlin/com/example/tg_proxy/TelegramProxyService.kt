@@ -48,6 +48,10 @@ class TelegramProxyService : Service() {
     private var networkIsCellular = false
     private var processRestartScheduled = false
     private var serviceStartedAtElapsedMs = 0L
+    @Volatile
+    private var configJson: String? = null
+    @Volatile
+    private var manuallyStopped = false
 
     private val restartProxy = Runnable { ensureProxyRunning() }
     private val networkChanged = Runnable { notifyPythonNetworkChanged() }
@@ -68,6 +72,7 @@ class TelegramProxyService : Service() {
     override fun onCreate() {
         super.onCreate()
         shuttingDown = false
+        manuallyStopped = false
         processRestartScheduled = false
         serviceStartedAtElapsedMs = SystemClock.elapsedRealtime()
         logLifecycle("onCreate")
@@ -76,17 +81,39 @@ class TelegramProxyService : Service() {
         startSilentAudioKeepAlive()
         registerNetworkCallback()
         registerScreenReceiver()
-        ensureProxyRunning()
         scheduleWatchdog()
         scheduleHealthCheck()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP_PROXY) {
+            ProxySettings.setEnabled(this, false)
+            manuallyStopped = true
+            shuttingDown = true
+            logLifecycle("Manual stop requested")
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        intent?.getStringExtra(EXTRA_CONFIG_JSON)?.let { configJson = it }
         shuttingDown = false
+        manuallyStopped = false
         logLifecycle("onStartCommand action=${intent?.action ?: "none"}")
         promoteToForeground()
         acquireBackgroundLocks()
         startSilentAudioKeepAlive()
+
+        if (intent?.action == ACTION_RELOAD_PROXY && proxyThread?.isAlive == true) {
+            logLifecycle("Proxy configuration reload requested")
+            try {
+                if (Python.isStarted()) {
+                    Python.getInstance().getModule(PYTHON_MODULE).callAttr("android_stop")
+                }
+            } catch (error: RuntimeException) {
+                Log.w(TAG, "Unable to reload Python proxy cleanly", error)
+            }
+        }
+
         ensureProxyRunning()
         scheduleWatchdog()
         scheduleHealthCheck()
@@ -118,7 +145,14 @@ class TelegramProxyService : Service() {
             val logPath = filesDir.resolve("proxy.log").absolutePath
             val heartbeatPath = filesDir.resolve(PYTHON_HEARTBEAT_FILE).absolutePath
             Log.i(TAG, "Starting Python proxy")
-            module.callAttr("android_start", logPath, heartbeatPath, networkIsCellular)
+            val effectiveConfig = configJson ?: ProxySettings.toJsonString(this)
+            module.callAttr(
+                "android_start",
+                logPath,
+                heartbeatPath,
+                networkIsCellular,
+                effectiveConfig
+            )
             Log.w(TAG, "Python proxy exited")
             logLifecycle("Python proxy exited")
         } catch (error: Throwable) {
@@ -129,7 +163,7 @@ class TelegramProxyService : Service() {
                 if (proxyThread === Thread.currentThread()) {
                     proxyThread = null
                 }
-                !shuttingDown
+                !shuttingDown && !manuallyStopped && ProxySettings.isEnabled(this)
             }
             if (shouldRestart) {
                 mainHandler.removeCallbacks(restartProxy)
@@ -554,23 +588,34 @@ class TelegramProxyService : Service() {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
         }
+        val toggleIntent = PendingIntent.getBroadcast(
+            this,
+            TOGGLE_REQUEST_CODE,
+            Intent(this, ProxyActionReceiver::class.java).apply {
+                action = ProxyActionReceiver.ACTION_TOGGLE_PROXY
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
 
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setContentTitle("Telegram Proxy")
             .setContentText("Proxy is running")
-            .setSmallIcon(android.R.drawable.stat_sys_upload_done)
+            .setSmallIcon(R.drawable.contour)
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setContentIntent(contentIntent)
+            .addAction(R.drawable.contour, "Stop proxy", toggleIntent)
             .build()
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         logLifecycle("onTaskRemoved")
-        refreshBackgroundLocks()
-        startSilentAudioKeepAlive()
-        ensureProxyRunning()
-        scheduleServiceRestart("task removed")
+        if (!manuallyStopped && ProxySettings.isEnabled(this)) {
+            refreshBackgroundLocks()
+            startSilentAudioKeepAlive()
+            ensureProxyRunning()
+            scheduleServiceRestart("task removed")
+        }
         super.onTaskRemoved(rootIntent)
     }
 
@@ -580,7 +625,9 @@ class TelegramProxyService : Service() {
         mainHandler.removeCallbacks(restartProxy)
         mainHandler.removeCallbacks(healthCheck)
         mainHandler.removeCallbacks(networkChanged)
-        scheduleServiceRestart("service destroyed")
+        if (!manuallyStopped && ProxySettings.isEnabled(this)) {
+            scheduleServiceRestart("service destroyed")
+        }
 
         networkCallback?.let { callback ->
             try {
@@ -638,6 +685,10 @@ class TelegramProxyService : Service() {
     companion object {
         const val ACTION_RESTART_PROXY = "com.example.tg_proxy.RESTART_PROXY"
         const val ACTION_WATCHDOG = "com.example.tg_proxy.WATCHDOG"
+        const val ACTION_START_PROXY = "com.example.tg_proxy.START_PROXY"
+        const val ACTION_STOP_PROXY = "com.example.tg_proxy.STOP_PROXY"
+        const val ACTION_RELOAD_PROXY = "com.example.tg_proxy.RELOAD_PROXY"
+        const val EXTRA_CONFIG_JSON = "proxy_config_json"
         private const val TAG = "TelegramProxyService"
         private const val PYTHON_MODULE = "proxy.tg_ws_proxy"
         private const val PROXY_THREAD_NAME = "TelegramProxyPython"
@@ -652,12 +703,13 @@ class TelegramProxyService : Service() {
         private const val PYTHON_HEARTBEAT_STALE_MS = 45_000L
         private const val RESTART_REQUEST_CODE = 1443
         private const val WATCHDOG_REQUEST_CODE = 1444
+        private const val TOGGLE_REQUEST_CODE = 1445
         private const val WATCHDOG_INTERVAL_MS = 60_000L
         private const val SERVICE_LOG_FILE = "service.log"
         private const val PYTHON_HEARTBEAT_FILE = "proxy.heartbeat"
         private const val TRANSSION_WAKE_LOCK_TAG = "WkService"
         private const val SILENT_AUDIO_SAMPLE_RATE = 8_000
         private const val SILENT_AUDIO_BUFFER_BYTES = 2_048
-        private const val MAX_SERVICE_LOG_BYTES = 512 * 1024
+        private const val MAX_SERVICE_LOG_BYTES = 16 * 1024
     }
 }

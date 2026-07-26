@@ -74,6 +74,7 @@ class ProxyConfig:
     fake_tls_domain: str = ''
     proxy_protocol: bool = False
     force_test_dc: bool = False
+    ws_keepalive_interval: int = 30
 
 
 proxy_config = ProxyConfig()

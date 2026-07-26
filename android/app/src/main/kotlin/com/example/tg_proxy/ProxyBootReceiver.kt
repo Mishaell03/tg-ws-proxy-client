@@ -24,6 +24,10 @@ class ProxyBootReceiver : BroadcastReceiver() {
             return
         }
 
+        if (!ProxySettings.isEnabled(context)) {
+            return
+        }
+
         try {
             if (action == TelegramProxyService.ACTION_WATCHDOG ||
                 action == Intent.ACTION_SCREEN_ON ||
