@@ -1,289 +1,648 @@
 package com.example.tg_proxy
 
-import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.AlarmManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.ServiceInfo
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
-import android.net.NetworkRequest
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
-import androidx.core.content.ContextCompat
+import android.os.SystemClock
+import android.util.Log
+import androidx.core.app.NotificationCompat
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
+import java.io.File
 
 class TelegramProxyService : Service() {
+    private val stateLock = Any()
+    private val mainHandler = Handler(Looper.getMainLooper())
 
-    private var wakeLock: PowerManager.WakeLock? = null
+    @Volatile
+    private var shuttingDown = false
     private var proxyThread: Thread? = null
-    @Volatile private var isRunning = false
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
+    private var silentAudioTrack: AudioTrack? = null
+    private var silentAudioThread: Thread? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
-    private var screenReceiver: ScreenReceiver? = null
-    private var keepaliveSocket: java.net.Socket? = null
+    private var screenReceiver: BroadcastReceiver? = null
+    private var activeDefaultNetwork: Network? = null
+    private var networkValidated: Boolean? = null
+    private var processRestartScheduled = false
+    private var serviceStartedAtElapsedMs = 0L
+
+    private val restartProxy = Runnable { ensureProxyRunning() }
+    private val networkChanged = Runnable { notifyPythonNetworkChanged() }
+    private val healthCheck = object : Runnable {
+        override fun run() {
+            if (!shuttingDown) {
+                promoteToForeground()
+                refreshBackgroundLocks()
+                startSilentAudioKeepAlive()
+                ensureProxyRunning()
+                checkPythonHeartbeat("health check")
+                scheduleWatchdog()
+                mainHandler.postDelayed(this, HEALTH_CHECK_DELAY_MS)
+            }
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
-        startForeground(1, createNotification())
-        acquireWakeLock()
-        registerScreenReceiver()
-        scheduleKeepAlive()
+        shuttingDown = false
+        processRestartScheduled = false
+        serviceStartedAtElapsedMs = SystemClock.elapsedRealtime()
+        logLifecycle("onCreate")
+        promoteToForeground()
+        acquireBackgroundLocks()
+        startSilentAudioKeepAlive()
         registerNetworkCallback()
-        startJavaKeepaliveThread()
-    }
-
-    private fun startJavaKeepaliveThread() {
-        Thread {
-            Looper.prepare()
-            val handler = Handler(Looper.myLooper()!!)
-            println("JAVA_KEEPALIVE: handler started")
-
-            fun doTick() {
-                // 1. Проверяем не завис ли Python
-                try {
-                    if (Python.isStarted()) {
-                        val py = Python.getInstance()
-                        val module = py.getModule("proxy.tg_ws_proxy")
-
-                        val lastActivity = module.callAttr("get_last_activity").toDouble()
-                        val now = System.currentTimeMillis() / 1000.0
-                        val elapsed = now - lastActivity
-
-                        println("JAVA_KEEPALIVE: tick, elapsed=${elapsed.toInt()}s")
-
-                        // Пингуем Python
-                        module.callAttr("android_keepalive")
-
-                        // Если Python не обновлял активность больше 30 секунд — перезапускаем
-                        if (lastActivity > 0 && elapsed > 30) {
-                            println("JAVA_KEEPALIVE: Python frozen ${elapsed.toInt()}s, restarting")
-                            proxyThread?.interrupt()
-                            Thread.sleep(500)
-                            isRunning = false
-                            startPythonProxyInThread()
-                            return
-                        }
-                    }
-                } catch (e: Exception) {
-                    println("JAVA_KEEPALIVE: jni error: $e")
-                }
-
-                // 2. Обновляем socket ping чтобы будить epoll
-                Thread {
-                    try {
-                        keepaliveSocket?.close()
-                        keepaliveSocket = null
-                        val sock = java.net.Socket()
-                        sock.connect(
-                            java.net.InetSocketAddress("127.0.0.1", 1443),
-                            1000
-                        )
-                        keepaliveSocket = sock
-                        println("JAVA_KEEPALIVE: socket refreshed")
-                    } catch (e: Exception) {
-                        println("JAVA_KEEPALIVE: socket failed: $e")
-                        keepaliveSocket = null
-                    }
-                }.start()
-            }
-
-            fun scheduleNextTick() {
-                handler.postDelayed({
-                    doTick()
-                    scheduleNextTick()
-                }, 5_000L)
-            }
-
-            handler.postDelayed({
-                println("JAVA_KEEPALIVE: first tick")
-                doTick()
-                scheduleNextTick()
-            }, 3_000L)
-
-            Looper.loop()
-        }.also {
-            it.isDaemon = true
-            it.name = "JavaKeepaliveThread"
-            it.priority = Thread.MAX_PRIORITY
-            it.start()
-        }
-    }
-
-    private fun acquireWakeLock() {
-        val pm = getSystemService(POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(
-            PowerManager.PARTIAL_WAKE_LOCK,
-            "tg_proxy:proxy_lock"
-        ).also { it.acquire(10 * 60 * 60 * 1000L) }
-    }
-
-    private fun registerNetworkCallback() {
-        val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
-        val activeNetwork = cm.activeNetwork
-        if (activeNetwork != null) {
-            val bound = cm.bindProcessToNetwork(activeNetwork)
-            println("SERVICE: bound to active network = $bound")
-        }
-        val request = NetworkRequest.Builder()
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .build()
-        networkCallback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                println("SERVICE: network available callback")
-                val threadDead = proxyThread?.isAlive != true
-                if (!isRunning || threadDead) {
-                    isRunning = true
-                    startPythonProxyInThread()
-                }
-            }
-            override fun onLost(network: Network) {
-                println("SERVICE: network lost")
-                val newActive = cm.activeNetwork
-                if (newActive != null) {
-                    cm.bindProcessToNetwork(newActive)
-                }
-            }
-        }
-        try {
-            cm.registerNetworkCallback(request, networkCallback!!)
-            println("SERVICE: network callback registered")
-        } catch (e: Exception) {
-            println("SERVICE: registerNetworkCallback failed: $e")
-        }
-        if (!isRunning) {
-            isRunning = true
-            startPythonProxyInThread()
-        }
+        registerScreenReceiver()
+        ensureProxyRunning()
+        scheduleWatchdog()
+        scheduleHealthCheck()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val threadAlive = proxyThread?.isAlive == true
-        println("SERVICE: onStartCommand, threadAlive=$threadAlive, isRunning=$isRunning")
-        if (!threadAlive) {
-            println("SERVICE: starting proxy thread")
-            isRunning = true
-            startPythonProxyInThread()
-        } else {
-            println("SERVICE: thread alive, just pinging")
-            try {
-                if (Python.isStarted()) {
-                    val py = Python.getInstance()
-                    val module = py.getModule("proxy.tg_ws_proxy")
-                    module.callAttr("android_keepalive")
-                }
-            } catch (e: Exception) {
-                println("SERVICE: ping failed: $e")
-            }
-        }
+        shuttingDown = false
+        logLifecycle("onStartCommand action=${intent?.action ?: "none"}")
+        promoteToForeground()
+        acquireBackgroundLocks()
+        startSilentAudioKeepAlive()
+        ensureProxyRunning()
+        scheduleWatchdog()
+        scheduleHealthCheck()
         return START_STICKY
     }
 
-    private fun startPythonProxyInThread() {
-        proxyThread = Thread {
-            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_FOREGROUND)
-            try {
-                if (!Python.isStarted()) {
-                    Python.start(AndroidPlatform(applicationContext))
-                }
-                val py = Python.getInstance()
-                val module = py.getModule("proxy.tg_ws_proxy")
-                module.callAttr("android_start")
-            } catch (e: Exception) {
-                println("PYTHON ERROR: $e")
-            } finally {
-                isRunning = false
-                println("SERVICE: proxy thread exited")
+    private fun ensureProxyRunning() {
+        synchronized(stateLock) {
+            if (shuttingDown || proxyThread?.isAlive == true) {
+                return
             }
-        }.also {
-            it.isDaemon = false
-            it.name = "ProxyThread"
-            it.priority = Thread.MAX_PRIORITY
-            it.start()
+
+            mainHandler.removeCallbacks(restartProxy)
+            proxyThread = Thread({ runPythonProxy() }, PROXY_THREAD_NAME).also {
+                it.isDaemon = false
+                it.start()
+            }
+            logLifecycle("Python thread started")
+        }
+    }
+
+    private fun runPythonProxy() {
+        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_FOREGROUND)
+        try {
+            if (!Python.isStarted()) {
+                Python.start(AndroidPlatform(applicationContext))
+            }
+            val module = Python.getInstance().getModule(PYTHON_MODULE)
+            val logPath = filesDir.resolve("proxy.log").absolutePath
+            val heartbeatPath = filesDir.resolve(PYTHON_HEARTBEAT_FILE).absolutePath
+            Log.i(TAG, "Starting Python proxy")
+            module.callAttr("android_start", logPath, heartbeatPath)
+            Log.w(TAG, "Python proxy exited")
+            logLifecycle("Python proxy exited")
+        } catch (error: Throwable) {
+            Log.e(TAG, "Python proxy crashed", error)
+            logLifecycle("Python proxy crashed: ${error.message}", error)
+        } finally {
+            val shouldRestart = synchronized(stateLock) {
+                if (proxyThread === Thread.currentThread()) {
+                    proxyThread = null
+                }
+                !shuttingDown
+            }
+            if (shouldRestart) {
+                mainHandler.removeCallbacks(restartProxy)
+                mainHandler.postDelayed(restartProxy, RESTART_DELAY_MS)
+                logLifecycle("Python restart scheduled in ${RESTART_DELAY_MS}ms")
+            }
+        }
+    }
+
+    private fun registerNetworkCallback() {
+        val connectivityManager =
+            getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+        activeDefaultNetwork = connectivityManager.activeNetwork
+        networkValidated = activeDefaultNetwork?.let { network ->
+            connectivityManager.getNetworkCapabilities(network)?.hasCapability(
+                NetworkCapabilities.NET_CAPABILITY_VALIDATED
+            )
+        }
+
+        networkCallback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                val previousNetwork = activeDefaultNetwork
+                activeDefaultNetwork = network
+                ensureProxyRunning()
+                if (previousNetwork != null && previousNetwork != network) {
+                    schedulePythonNetworkChanged("switched")
+                }
+            }
+
+            override fun onLost(network: Network) {
+                if (activeDefaultNetwork != network) {
+                    return
+                }
+                activeDefaultNetwork = null
+                networkValidated = false
+                schedulePythonNetworkChanged("lost")
+            }
+
+            override fun onCapabilitiesChanged(
+                network: Network,
+                networkCapabilities: NetworkCapabilities
+            ) {
+                val validated = networkCapabilities.hasCapability(
+                    NetworkCapabilities.NET_CAPABILITY_VALIDATED
+                )
+                if (activeDefaultNetwork == network && networkValidated != validated) {
+                    networkValidated = validated
+                    logLifecycle(
+                        "Default network ${if (validated) "validated" else "not validated"}"
+                    )
+                }
+            }
+        }
+
+        try {
+            connectivityManager.registerDefaultNetworkCallback(networkCallback!!)
+        } catch (error: RuntimeException) {
+            Log.w(TAG, "Unable to register network callback", error)
         }
     }
 
     private fun registerScreenReceiver() {
-        screenReceiver = ScreenReceiver()
-        val filter = android.content.IntentFilter().apply {
-            addAction(Intent.ACTION_SCREEN_OFF)
+        screenReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                when (intent.action) {
+                    Intent.ACTION_SCREEN_ON -> {
+                        acquireBackgroundLocks()
+                        ensureProxyRunning()
+                        checkPythonHeartbeat("screen on")
+                        scheduleWatchdog()
+                    }
+                    Intent.ACTION_USER_PRESENT -> {
+                        acquireBackgroundLocks()
+                        ensureProxyRunning()
+                        checkPythonHeartbeat("user present")
+                        scheduleWatchdog()
+                    }
+                    Intent.ACTION_SCREEN_OFF -> {
+                        acquireBackgroundLocks()
+                        ensureProxyRunning()
+                        scheduleWatchdog()
+                    }
+                }
+            }
+        }
+
+        val filter = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_SCREEN_OFF)
             addAction(Intent.ACTION_USER_PRESENT)
         }
         registerReceiver(screenReceiver, filter)
-        println("SERVICE: screen receiver registered")
     }
 
-    private fun scheduleKeepAlive() {
-        val alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
-        val intent = Intent(this, KeepAliveReceiver::class.java)
+    private fun schedulePythonNetworkChanged(reason: String) {
+        logLifecycle("Default network $reason")
+        mainHandler.removeCallbacks(networkChanged)
+        mainHandler.postDelayed(networkChanged, NETWORK_CHANGE_DEBOUNCE_MS)
+    }
+
+    private fun notifyPythonNetworkChanged() {
+        try {
+            if (Python.isStarted()) {
+                Python.getInstance()
+                    .getModule(PYTHON_MODULE)
+                    .callAttr("android_network_changed")
+            }
+        } catch (error: RuntimeException) {
+            Log.w(TAG, "Unable to notify Python about network change", error)
+        }
+    }
+
+    private fun checkPythonHeartbeat(reason: String) {
+        if (processRestartScheduled || proxyThread?.isAlive != true) {
+            return
+        }
+
+        val serviceAge = SystemClock.elapsedRealtime() - serviceStartedAtElapsedMs
+        if (serviceAge < PYTHON_HEARTBEAT_GRACE_MS) {
+            return
+        }
+
+        val heartbeatFile = File(filesDir, PYTHON_HEARTBEAT_FILE)
+        val heartbeatAge = System.currentTimeMillis() - heartbeatFile.lastModified()
+        if (!heartbeatFile.exists() || heartbeatAge > PYTHON_HEARTBEAT_STALE_MS) {
+            restartProxyProcess(
+                "$reason; Python heartbeat stale for ${heartbeatAge.coerceAtLeast(0L)}ms"
+            )
+        }
+    }
+
+    private fun restartProxyProcess(reason: String) {
+        if (processRestartScheduled || shuttingDown) {
+            return
+        }
+        processRestartScheduled = true
+        logLifecycle("Proxy process restart requested: $reason")
+        scheduleServiceRestart(reason)
+        mainHandler.postDelayed(
+            { android.os.Process.killProcess(android.os.Process.myPid()) },
+            PROCESS_KILL_DELAY_MS
+        )
+    }
+
+    private fun acquireBackgroundLocks() {
+        if (wakeLock?.isHeld != true) {
+            val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+            wakeLock = powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                cpuWakeLockTag()
+            ).apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        }
+
+        if (wifiLock?.isHeld != true) {
+            try {
+                val wifiManager =
+                    applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+                @Suppress("DEPRECATION")
+                wifiLock = wifiManager.createWifiLock(
+                    WifiManager.WIFI_MODE_FULL_HIGH_PERF,
+                    "$packageName:proxy_wifi"
+                ).apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+            } catch (error: RuntimeException) {
+                Log.w(TAG, "Unable to acquire Wi-Fi lock", error)
+            }
+        }
+    }
+
+    // Transsion firmware may remove the kernel lock while leaving isHeld=true.
+    // Recycle both locks before its idle freezer gets a chance to suspend us.
+    private fun refreshBackgroundLocks() {
+        if (wakeLock?.isHeld == true) {
+            wakeLock?.release()
+        }
+        wakeLock = null
+        if (wifiLock?.isHeld == true) {
+            wifiLock?.release()
+        }
+        wifiLock = null
+        acquireBackgroundLocks()
+    }
+
+    // TECNO Hiber freezes idle UIDs even when a normal FGS is visible. A
+    // silent PCM stream is recognized as active media by that firmware. It
+    // contains only zero samples, so it produces no audible output.
+    private fun startSilentAudioKeepAlive() {
+        synchronized(stateLock) {
+            if (silentAudioThread?.isAlive == true) {
+                return
+            }
+
+            val minBuffer = AudioTrack.getMinBufferSize(
+                SILENT_AUDIO_SAMPLE_RATE,
+                AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_16BIT
+            )
+            if (minBuffer <= 0) {
+                Log.w(TAG, "Unable to initialize silent audio keepalive: buffer=$minBuffer")
+                return
+            }
+
+            val track = try {
+                AudioTrack.Builder()
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                            .build()
+                    )
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setSampleRate(SILENT_AUDIO_SAMPLE_RATE)
+                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                            .build()
+                    )
+                    .setBufferSizeInBytes(maxOf(minBuffer, SILENT_AUDIO_BUFFER_BYTES))
+                    .setTransferMode(AudioTrack.MODE_STREAM)
+                    .build()
+            } catch (error: RuntimeException) {
+                Log.w(TAG, "Unable to create silent audio keepalive", error)
+                return
+            }
+
+            if (track.state != AudioTrack.STATE_INITIALIZED) {
+                track.release()
+                Log.w(TAG, "Silent audio keepalive is not initialized")
+                return
+            }
+
+            val silence = ByteArray(SILENT_AUDIO_BUFFER_BYTES)
+            try {
+                track.play()
+            } catch (error: IllegalStateException) {
+                track.release()
+                Log.w(TAG, "Unable to start silent audio keepalive", error)
+                return
+            }
+
+            silentAudioTrack = track
+            silentAudioThread = Thread({
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO)
+                try {
+                    while (!shuttingDown && silentAudioTrack === track) {
+                        if (track.write(silence, 0, silence.size, AudioTrack.WRITE_BLOCKING) < 0) {
+                            break
+                        }
+                    }
+                } catch (error: Throwable) {
+                    if (!shuttingDown) {
+                        Log.w(TAG, "Silent audio keepalive stopped", error)
+                    }
+                } finally {
+                    try {
+                        track.pause()
+                    } catch (_: IllegalStateException) {
+                    }
+                    track.release()
+                    synchronized(stateLock) {
+                        if (silentAudioTrack === track) {
+                            silentAudioTrack = null
+                            silentAudioThread = null
+                        }
+                    }
+                }
+            }, "TelegramProxyAudioKeepalive").also {
+                it.isDaemon = false
+                it.start()
+            }
+            logLifecycle("Silent audio keepalive started")
+        }
+    }
+
+    private fun stopSilentAudioKeepAlive() {
+        val track = synchronized(stateLock) {
+            silentAudioTrack.also {
+                silentAudioTrack = null
+                silentAudioThread = null
+            }
+        }
+        if (track != null) {
+            try {
+                track.pause()
+            } catch (_: IllegalStateException) {
+            }
+            track.flush()
+        }
+    }
+
+    private fun cpuWakeLockTag(): String {
+        val transsionBrands = setOf("TECNO", "INFINIX", "ITEL")
+        return if (Build.MANUFACTURER.uppercase() in transsionBrands) {
+            // Transsion firmware proxies arbitrary tags but keeps WkService active.
+            TRANSSION_WAKE_LOCK_TAG
+        } else {
+            "$packageName:proxy_cpu"
+        }
+    }
+
+    private fun releaseBackgroundLocks() {
+        wifiLock?.let { if (it.isHeld) it.release() }
+        wifiLock = null
+        wakeLock?.let { if (it.isHeld) it.release() }
+        wakeLock = null
+    }
+
+    private fun scheduleHealthCheck() {
+        mainHandler.removeCallbacks(healthCheck)
+        mainHandler.postDelayed(healthCheck, HEALTH_CHECK_DELAY_MS)
+    }
+
+    private fun scheduleServiceRestart(reason: String) {
+        logLifecycle("Service restart scheduled: $reason")
+        val intent = Intent(this, ProxyBootReceiver::class.java).apply {
+            action = ACTION_RESTART_PROXY
+        }
         val pendingIntent = PendingIntent.getBroadcast(
-            this, 0, intent,
+            this,
+            RESTART_REQUEST_CODE,
+            intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        alarmManager.setRepeating(
-            AlarmManager.RTC_WAKEUP,
-            System.currentTimeMillis() + 60_000L,
-            60_000L,
-            pendingIntent
+        val alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
+        val triggerAt = System.currentTimeMillis() + SERVICE_RESTART_DELAY_MS
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && alarmManager.canScheduleExactAlarms()) {
+            alarmManager.setExactAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP,
+                triggerAt,
+                pendingIntent
+            )
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            alarmManager.setAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP,
+                triggerAt,
+                pendingIntent
+            )
+        } else {
+            alarmManager.set(AlarmManager.RTC_WAKEUP, triggerAt, pendingIntent)
+        }
+    }
+
+    private fun scheduleWatchdog() {
+        val intent = Intent(this, ProxyBootReceiver::class.java).apply {
+            action = ACTION_WATCHDOG
+        }
+        val pendingIntent = PendingIntent.getBroadcast(
+            this,
+            WATCHDOG_REQUEST_CODE,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        println("SERVICE: keepalive alarm scheduled")
+        val alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
+        val triggerAt = System.currentTimeMillis() + WATCHDOG_INTERVAL_MS
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && alarmManager.canScheduleExactAlarms()) {
+            alarmManager.setExactAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP,
+                triggerAt,
+                pendingIntent
+            )
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            alarmManager.setAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP,
+                triggerAt,
+                pendingIntent
+            )
+        } else {
+            alarmManager.set(AlarmManager.RTC_WAKEUP, triggerAt, pendingIntent)
+        }
+    }
+
+    private fun promoteToForeground() {
+        val notification = createNotification()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+    }
+
+    private fun createNotification(): Notification {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                NOTIFICATION_CHANNEL_ID,
+                "Telegram Proxy",
+                NotificationManager.IMPORTANCE_LOW
+            )
+            getSystemService(NotificationManager::class.java)
+                .createNotificationChannel(channel)
+        }
+
+        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+        val contentIntent = launchIntent?.let {
+            PendingIntent.getActivity(
+                this,
+                0,
+                it,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+        }
+
+        return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
+            .setContentTitle("Telegram Proxy")
+            .setContentText("Proxy is running")
+            .setSmallIcon(android.R.drawable.stat_sys_upload_done)
+            .setOngoing(true)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setContentIntent(contentIntent)
+            .build()
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        logLifecycle("onTaskRemoved")
+        refreshBackgroundLocks()
+        startSilentAudioKeepAlive()
+        ensureProxyRunning()
+        scheduleServiceRestart("task removed")
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
-        isRunning = false
-        proxyThread?.interrupt()
-        keepaliveSocket?.close()
-        wakeLock?.let { if (it.isHeld) it.release() }
-        networkCallback?.let {
-            (getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager)
-                .unregisterNetworkCallback(it)
+        logLifecycle("onDestroy")
+        shuttingDown = true
+        mainHandler.removeCallbacks(restartProxy)
+        mainHandler.removeCallbacks(healthCheck)
+        mainHandler.removeCallbacks(networkChanged)
+        scheduleServiceRestart("service destroyed")
+
+        networkCallback?.let { callback ->
+            try {
+                (getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager)
+                    .unregisterNetworkCallback(callback)
+            } catch (error: RuntimeException) {
+                Log.w(TAG, "Unable to unregister network callback", error)
+            }
         }
-        screenReceiver?.let { unregisterReceiver(it) }
+        networkCallback = null
+        activeDefaultNetwork = null
+        networkValidated = null
+
+        screenReceiver?.let { receiver ->
+            try {
+                unregisterReceiver(receiver)
+            } catch (error: RuntimeException) {
+                Log.w(TAG, "Unable to unregister screen receiver", error)
+            }
+        }
+        screenReceiver = null
+
+        try {
+            if (Python.isStarted()) {
+                Python.getInstance().getModule(PYTHON_MODULE).callAttr("android_stop")
+            }
+        } catch (error: RuntimeException) {
+            Log.w(TAG, "Unable to stop Python proxy cleanly", error)
+        }
+
+        stopSilentAudioKeepAlive()
+        releaseBackgroundLocks()
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun createNotification(): Notification {
-        val channelId = "telegram_proxy"
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel(
-                channelId, "Telegram Proxy", NotificationManager.IMPORTANCE_LOW
-            ).also {
-                getSystemService(NotificationManager::class.java)
-                    .createNotificationChannel(it)
-            }
+    private fun logLifecycle(message: String, error: Throwable? = null) {
+        if (error == null) {
+            Log.i(TAG, message)
+        } else {
+            Log.e(TAG, message, error)
         }
-        return Notification.Builder(this, channelId)
-            .setContentTitle("Telegram Proxy")
-            .setContentText("Работает в фоне")
-            .setSmallIcon(android.R.drawable.ic_menu_info_details)
-            .build()
-    }
-}
 
-class KeepAliveReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) {
-        println("KEEPALIVE: alarm fired")
-        val serviceIntent = Intent(context, TelegramProxyService::class.java)
-        ContextCompat.startForegroundService(context, serviceIntent)
         try {
-            if (Python.isStarted()) {
-                val py = Python.getInstance()
-                val module = py.getModule("proxy.tg_ws_proxy")
-                module.callAttr("android_keepalive")
+            val logFile = File(filesDir, SERVICE_LOG_FILE)
+            if (logFile.length() > MAX_SERVICE_LOG_BYTES) {
+                logFile.writeText("")
             }
-        } catch (e: Exception) {
-            println("KEEPALIVE: python ping failed: $e")
+            logFile.appendText("${System.currentTimeMillis()} $message\n")
+        } catch (ignored: RuntimeException) {
         }
+    }
+
+    companion object {
+        const val ACTION_RESTART_PROXY = "com.example.tg_proxy.RESTART_PROXY"
+        const val ACTION_WATCHDOG = "com.example.tg_proxy.WATCHDOG"
+        private const val TAG = "TelegramProxyService"
+        private const val PYTHON_MODULE = "proxy.tg_ws_proxy"
+        private const val PROXY_THREAD_NAME = "TelegramProxyPython"
+        private const val NOTIFICATION_CHANNEL_ID = "telegram_proxy"
+        private const val NOTIFICATION_ID = 1
+        private const val RESTART_DELAY_MS = 3_000L
+        private const val HEALTH_CHECK_DELAY_MS = 10_000L
+        private const val NETWORK_CHANGE_DEBOUNCE_MS = 5_000L
+        private const val SERVICE_RESTART_DELAY_MS = 2_000L
+        private const val PROCESS_KILL_DELAY_MS = 500L
+        private const val PYTHON_HEARTBEAT_GRACE_MS = 30_000L
+        private const val PYTHON_HEARTBEAT_STALE_MS = 45_000L
+        private const val RESTART_REQUEST_CODE = 1443
+        private const val WATCHDOG_REQUEST_CODE = 1444
+        private const val WATCHDOG_INTERVAL_MS = 60_000L
+        private const val SERVICE_LOG_FILE = "service.log"
+        private const val PYTHON_HEARTBEAT_FILE = "proxy.heartbeat"
+        private const val TRANSSION_WAKE_LOCK_TAG = "WkService"
+        private const val SILENT_AUDIO_SAMPLE_RATE = 8_000
+        private const val SILENT_AUDIO_BUFFER_BYTES = 2_048
+        private const val MAX_SERVICE_LOG_BYTES = 512 * 1024
     }
 }

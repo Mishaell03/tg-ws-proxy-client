@@ -65,6 +65,18 @@ def set_sock_opts(transport, buffer_size):
     except OSError:
         pass
 
+    try:
+        sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)
+        for option, value in (
+            (getattr(_socket, 'TCP_KEEPIDLE', None), 30),
+            (getattr(_socket, 'TCP_KEEPINTVL', None), 10),
+            (getattr(_socket, 'TCP_KEEPCNT', None), 3),
+        ):
+            if option is not None:
+                sock.setsockopt(_socket.IPPROTO_TCP, option, value)
+    except OSError:
+        pass
+
 
 class RawWebSocket:
     __slots__ = ('reader', 'writer', '_closed')
@@ -151,16 +163,26 @@ class RawWebSocket:
         if self._closed:
             raise ConnectionError("WebSocket closed")
         frame = self._build_frame(self.OP_BINARY, data, mask=True)
-        self.writer.write(frame)
-        await self.writer.drain()
+        await self._write_frame(frame)
 
     async def send_batch(self, parts: List[bytes]):
         if self._closed:
             raise ConnectionError("WebSocket closed")
-        for part in parts:
-            self.writer.write(
-                self._build_frame(self.OP_BINARY, part, mask=True))
-        await self.writer.drain()
+        await self._write_frame(b''.join(
+            self._build_frame(self.OP_BINARY, part, mask=True)
+            for part in parts
+        ))
+
+    async def _write_frame(self, frame: bytes):
+        try:
+            self.writer.write(frame)
+            await self.writer.drain()
+        except (ConnectionError, OSError):
+            self._closed = True
+            transport = getattr(self.writer, 'transport', None)
+            if transport is not None:
+                transport.abort()
+            raise
 
     async def recv(self) -> Optional[bytes]:
         while not self._closed:
@@ -182,11 +204,10 @@ class RawWebSocket:
 
             if opcode == self.OP_PING:
                 try:
-                    self.writer.write(
+                    await self._write_frame(
                         self._build_frame(self.OP_PONG, payload, mask=True))
-                    await self.writer.drain()
-                except Exception:
-                    pass
+                except (ConnectionError, OSError):
+                    return None
                 continue
 
             if opcode == self.OP_PONG:
