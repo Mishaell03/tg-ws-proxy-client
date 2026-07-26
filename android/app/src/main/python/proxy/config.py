@@ -68,6 +68,7 @@ class ProxyConfig:
     buffer_size: int = 256 * 1024
     pool_size: int = 4
     fallback_cfproxy: bool = True
+    prefer_cfproxy: bool = False
     cfproxy_user_domains: List[str] = field(default_factory=list)
     cfproxy_worker_domains: List[str] = field(default_factory=list)
     fake_tls_domain: str = ''

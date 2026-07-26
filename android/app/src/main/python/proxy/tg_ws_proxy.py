@@ -311,6 +311,26 @@ async def _handle_client(reader, writer, secret: bytes):
         target = proxy_config.dc_redirects.get(dc)
         is_any_cf_fallback = proxy_config.fallback_cfproxy or proxy_config.cfproxy_worker_domains
 
+        # Mobile operators may block Telegram IP/SNI while Cloudflare remains
+        # reachable. On Android cellular networks, avoid leaking the first
+        # connection attempt to the blocked direct route.
+        if proxy_config.prefer_cfproxy and is_any_cf_fallback and not is_test_dc:
+            log.info("[%s] DC%d%s cellular network -> CF proxy first",
+                     label, dc, media_tag)
+            splitter = None
+            try:
+                splitter = MsgSplitter(relay_init, proto_int)
+            except Exception:
+                pass
+            ok = await do_fallback(
+                clt_reader, clt_writer, relay_init, label,
+                dc, is_test_dc, is_media, media_tag,
+                ctx, splitter=splitter)
+            if not ok:
+                log.warning("[%s] DC%d%s cellular fallback unavailable",
+                            label, dc, media_tag)
+            return
+
         # Fallback if DC not in config, if WS blacklisted for this DC/is_media or if connect to ip is timed out
         if (dc not in proxy_config.dc_redirects
             or dc_key in ws_blacklist
@@ -760,10 +780,11 @@ def main():
         log.info("Shutting down. Final stats: %s", stats.summary())
 
 
-async def _network_changed():
+async def _network_changed(is_cellular: bool):
     global _last_activity, _last_network_change
     _last_activity = time.time()
     _last_network_change = time.monotonic()
+    proxy_config.prefer_cfproxy = is_cellular
     ws_blacklist.clear()
     dc_fail_until.clear()
     ip_fail_until.clear()
@@ -779,10 +800,11 @@ async def _network_changed():
     cf_worker_pool.reset()
     await ws_pool.warmup()
     await cf_worker_pool.warmup()
-    log.info("Android network changed; %d stale session(s) closed", len(tasks))
+    log.info("Android network changed (%s); %d stale session(s) closed",
+             "cellular" if is_cellular else "non-cellular", len(tasks))
 
 
-def _schedule_network_changed():
+def _schedule_network_changed(is_cellular: bool):
     global _network_change_task
     if time.monotonic() - _last_network_change < NETWORK_CHANGE_MIN_INTERVAL:
         log.info("Duplicate Android network change ignored")
@@ -790,13 +812,13 @@ def _schedule_network_changed():
     if _network_change_task is not None and not _network_change_task.done():
         log.info("Android network change already in progress")
         return
-    _network_change_task = asyncio.create_task(_network_changed())
+    _network_change_task = asyncio.create_task(_network_changed(is_cellular))
 
 
-def android_network_changed():
+def android_network_changed(is_cellular: bool = False):
     loop = _global_loop
     if loop is not None and loop.is_running():
-        loop.call_soon_threadsafe(_schedule_network_changed)
+        loop.call_soon_threadsafe(_schedule_network_changed, bool(is_cellular))
 
 
 def android_stop():
@@ -822,7 +844,8 @@ def _configure_android_logging(log_path: str):
 
 
 def android_start(log_path: Optional[str] = None,
-                  heartbeat_path: Optional[str] = None):
+                  heartbeat_path: Optional[str] = None,
+                  is_cellular: bool = False):
     import traceback
     global _global_loop, _android_stop_event, _android_heartbeat_path
 
@@ -850,9 +873,10 @@ def android_start(log_path: Optional[str] = None,
             '203:91.105.192.100',
         ])
         proxy_config.fallback_cfproxy = True
+        proxy_config.prefer_cfproxy = bool(is_cellular)
         proxy_config.cfproxy_user_domains = []
         proxy_config.cfproxy_worker_domains = []
-        proxy_config.pool_size = 0
+        proxy_config.pool_size = 2
         proxy_config.buffer_size = 256 * 1024
         proxy_config.fake_tls_domain = ""
         proxy_config.proxy_protocol = False

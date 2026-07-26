@@ -45,6 +45,7 @@ class TelegramProxyService : Service() {
     private var screenReceiver: BroadcastReceiver? = null
     private var activeDefaultNetwork: Network? = null
     private var networkValidated: Boolean? = null
+    private var networkIsCellular = false
     private var processRestartScheduled = false
     private var serviceStartedAtElapsedMs = 0L
 
@@ -117,7 +118,7 @@ class TelegramProxyService : Service() {
             val logPath = filesDir.resolve("proxy.log").absolutePath
             val heartbeatPath = filesDir.resolve(PYTHON_HEARTBEAT_FILE).absolutePath
             Log.i(TAG, "Starting Python proxy")
-            module.callAttr("android_start", logPath, heartbeatPath)
+            module.callAttr("android_start", logPath, heartbeatPath, networkIsCellular)
             Log.w(TAG, "Python proxy exited")
             logLifecycle("Python proxy exited")
         } catch (error: Throwable) {
@@ -147,6 +148,11 @@ class TelegramProxyService : Service() {
                 NetworkCapabilities.NET_CAPABILITY_VALIDATED
             )
         }
+        networkIsCellular = activeDefaultNetwork?.let { network ->
+            connectivityManager.getNetworkCapabilities(network)?.hasTransport(
+                NetworkCapabilities.TRANSPORT_CELLULAR
+            )
+        } == true
 
         networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
@@ -174,6 +180,15 @@ class TelegramProxyService : Service() {
                 val validated = networkCapabilities.hasCapability(
                     NetworkCapabilities.NET_CAPABILITY_VALIDATED
                 )
+                val isCellular = networkCapabilities.hasTransport(
+                    NetworkCapabilities.TRANSPORT_CELLULAR
+                )
+                if (activeDefaultNetwork == network && networkIsCellular != isCellular) {
+                    networkIsCellular = isCellular
+                    schedulePythonNetworkChanged(
+                        if (isCellular) "using cellular" else "using non-cellular"
+                    )
+                }
                 if (activeDefaultNetwork == network && networkValidated != validated) {
                     networkValidated = validated
                     logLifecycle(
@@ -234,7 +249,7 @@ class TelegramProxyService : Service() {
             if (Python.isStarted()) {
                 Python.getInstance()
                     .getModule(PYTHON_MODULE)
-                    .callAttr("android_network_changed")
+                    .callAttr("android_network_changed", networkIsCellular)
             }
         } catch (error: RuntimeException) {
             Log.w(TAG, "Unable to notify Python about network change", error)
