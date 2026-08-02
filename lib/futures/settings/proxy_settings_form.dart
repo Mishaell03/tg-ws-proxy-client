@@ -54,6 +54,9 @@ class _ProxySettingsFormState extends State<ProxySettingsForm> {
     _workerDomains = TextEditingController();
     _keepalive = TextEditingController();
     _secret.addListener(_keepSecretPrefix);
+    _host.addListener(_refreshConnectionLink);
+    _port.addListener(_refreshConnectionLink);
+    _secret.addListener(_refreshConnectionLink);
     _load(widget.settings);
   }
 
@@ -82,6 +85,9 @@ class _ProxySettingsFormState extends State<ProxySettingsForm> {
   @override
   void dispose() {
     _secret.removeListener(_keepSecretPrefix);
+    _host.removeListener(_refreshConnectionLink);
+    _port.removeListener(_refreshConnectionLink);
+    _secret.removeListener(_refreshConnectionLink);
     for (final controller in <TextEditingController>[
       _host,
       _port,
@@ -112,6 +118,42 @@ class _ProxySettingsFormState extends State<ProxySettingsForm> {
   }
 
   String _displaySecret(String value) => 'dd${_stripSecretPrefix(value)}';
+
+  void _refreshConnectionLink() {
+    if (mounted) setState(() {});
+  }
+
+  String get _connectionLink {
+    final configuredHost = _host.text.trim();
+    final host = configuredHost == '0.0.0.0' ? '127.0.0.1' : configuredHost;
+    return Uri(
+      scheme: 'tg',
+      host: 'proxy',
+      queryParameters: <String, String>{
+        'server': host,
+        'port': _port.text.trim(),
+        'secret': _displaySecret(_secret.text),
+      },
+    ).toString();
+  }
+
+  Future<void> _copyConnectionLink(AppLocalizations t) async {
+    try {
+      await Clipboard.setData(ClipboardData(text: _connectionLink));
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(t.connectionLinkCopied)));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(error.toString()),
+          backgroundColor: context.colors.error,
+        ),
+      );
+    }
+  }
 
   void _keepSecretPrefix() {
     if (_normalizingSecret) return;
@@ -176,6 +218,37 @@ class _ProxySettingsFormState extends State<ProxySettingsForm> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          SettingsSection(
+            title: t.connectionLinkSection,
+            children: [
+              Container(
+                padding: const EdgeInsets.fromLTRB(14, 12, 6, 12),
+                decoration: BoxDecoration(
+                  color: colors.bg,
+                  border: Border.all(color: colors.border),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: SelectableText(
+                        _connectionLink,
+                        style: AppText.regular_18a.copyWith(
+                          fontSize: 13,
+                          color: colors.text,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => _copyConnectionLink(t),
+                      tooltip: t.copyConnectionLink,
+                      icon: Icon(Icons.copy_rounded, color: colors.primary),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
           SettingsSection(
             title: t.listenerSection,
             children: [
@@ -332,13 +405,7 @@ class _AdaptivePair extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         if (constraints.maxWidth < 420) {
-          return Column(
-            children: [
-              first,
-              const SizedBox(height: 12),
-              second,
-            ],
-          );
+          return Column(children: [first, const SizedBox(height: 12), second]);
         }
 
         return Row(

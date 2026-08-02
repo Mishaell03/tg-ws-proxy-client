@@ -6,6 +6,10 @@
   "telegramOpenFailed": "Не удалось открыть Telegram",
 
   "connecting": "Подключение...",
+  "portAlreadyInUse": "Порт {port} уже занят другим приложением",
+  "@portAlreadyInUse": {
+    "placeholders": { "port": { "type": "int" } }
+  },
   "connected": "Подключено",
   "disconnected": "Отключено",
 
@@ -22,6 +26,9 @@
   "logsExported": "Логи экспортированы",
   "retry": "Повторить",
   "exportLogs": "Экспорт логов",
+  "connectionLinkSection": "Ссылка подключения",
+  "copyConnectionLink": "Копировать ссылку",
+  "connectionLinkCopied": "Ссылка подключения скопирована",
 
   "listenerSection": "Слушатель",
   "hostLabel": "Хост",

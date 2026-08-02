@@ -7,6 +7,23 @@
 
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
+  // Keep desktop helper processes tied to the application lifetime. Python
+  // inherits this job, and Windows terminates it if the UI process closes or
+  // crashes, preventing an orphaned proxy from retaining the listen port.
+  HANDLE process_job = ::CreateJobObjectW(nullptr, nullptr);
+  if (process_job != nullptr) {
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {};
+    limits.BasicLimitInformation.LimitFlags =
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!::SetInformationJobObject(process_job,
+                                   JobObjectExtendedLimitInformation, &limits,
+                                   sizeof(limits)) ||
+        !::AssignProcessToJobObject(process_job, ::GetCurrentProcess())) {
+      ::CloseHandle(process_job);
+      process_job = nullptr;
+    }
+  }
+
   // Attach to console when present (e.g., 'flutter run') or create a
   // new console when running with a debugger.
   if (!::AttachConsole(ATTACH_PARENT_PROCESS) && ::IsDebuggerPresent()) {
@@ -39,5 +56,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   }
 
   ::CoUninitialize();
+  if (process_job != nullptr) {
+    ::CloseHandle(process_job);
+  }
   return EXIT_SUCCESS;
 }

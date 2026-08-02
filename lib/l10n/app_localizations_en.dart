@@ -24,6 +24,11 @@ class AppLocalizationsEn extends AppLocalizations {
   String get connecting => 'Connecting...';
 
   @override
+  String portAlreadyInUse(int port) {
+    return 'Port $port is already used by another application';
+  }
+
+  @override
   String get connected => 'Connected';
 
   @override
@@ -61,6 +66,15 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get exportLogs => 'Export logs';
+
+  @override
+  String get connectionLinkSection => 'Connection link';
+
+  @override
+  String get copyConnectionLink => 'Copy link';
+
+  @override
+  String get connectionLinkCopied => 'Connection link copied';
 
   @override
   String get listenerSection => 'Listener';

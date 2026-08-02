@@ -10,7 +10,8 @@ import 'package:tg_proxy/futures/home/widgets/proxy_central_orb.dart';
 import 'package:tg_proxy/futures/home/widgets/proxy_status_label.dart';
 import 'package:tg_proxy/futures/home/widgets/proxy_top_bar.dart';
 import 'package:tg_proxy/futures/settings/proxy_page.dart' as settings;
-import 'package:tg_proxy/futures/settings/proxy_settings.dart' as settings_model;
+import 'package:tg_proxy/futures/settings/proxy_settings.dart'
+    as settings_model;
 import 'package:tg_proxy/l10n/app_localizations.dart';
 
 class ProxyPage extends StatefulWidget {
@@ -31,6 +32,7 @@ class _ProxyPageState extends State<ProxyPage> with TickerProviderStateMixin {
   bool _enabled = false;
   bool _running = false;
   bool _changingState = false;
+  String? _lastReportedError;
 
   bool get _connecting => _changingState || (_enabled && !_running);
 
@@ -73,6 +75,15 @@ class _ProxyPageState extends State<ProxyPage> with TickerProviderStateMixin {
         _enabled = status['enabled'] == true;
         _running = status['running'] == true;
       });
+      final error = status['errorCode'] == 'PORT_IN_USE'
+          ? AppLocalizations.of(context)!.portAlreadyInUse(
+              (status['errorPort'] as num?)?.toInt() ?? 1443,
+            )
+          : status['error']?.toString();
+      if (error != null && error.isNotEmpty && error != _lastReportedError) {
+        _lastReportedError = error;
+        _showError(error);
+      }
     } on PlatformException {
       // Keep the last known state while the Android process reconnects.
     }
@@ -80,6 +91,7 @@ class _ProxyPageState extends State<ProxyPage> with TickerProviderStateMixin {
 
   Future<void> _toggleProxy() async {
     if (_changingState) return;
+    final t = AppLocalizations.of(context)!;
     setState(() => _changingState = true);
     try {
       if (_enabled) {
@@ -91,20 +103,22 @@ class _ProxyPageState extends State<ProxyPage> with TickerProviderStateMixin {
       }
       await _refreshStatus();
     } on PlatformException catch (error) {
-      _showError(error.message ?? error.code);
+      if (error.code == 'PORT_IN_USE') {
+        final port = (error.details as num?)?.toInt() ?? 0;
+        _showError(t.portAlreadyInUse(port));
+      } else {
+        _showError(error.message ?? error.code);
+      }
     } finally {
       if (mounted) setState(() => _changingState = false);
     }
   }
 
   void _openSettings() {
-    Navigator.of(
-      context,
-    ).push(
+    Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => settings.ProxyPage(
-          themeController: widget.themeController,
-        ),
+        builder: (_) =>
+            settings.ProxyPage(themeController: widget.themeController),
       ),
     );
   }
@@ -116,9 +130,10 @@ class _ProxyPageState extends State<ProxyPage> with TickerProviderStateMixin {
       final proxySettings = settings_model.ProxySettings.fromMap(
         await ProxyController.getSettings(),
       );
-      final opened = await UrlLauncher.openExternalUrl(
+      final opened = await UrlLauncher.openTelegramProxy(
         _buildMtprotoProxyUrl(proxySettings),
       );
+      if (!mounted) return;
       if (!opened) {
         _showError(AppLocalizations.of(context)!.telegramOpenFailed);
       }
@@ -128,11 +143,12 @@ class _ProxyPageState extends State<ProxyPage> with TickerProviderStateMixin {
   }
 
   String _buildMtprotoProxyUrl(settings_model.ProxySettings settings) {
+    final server = settings.host == '0.0.0.0' ? '127.0.0.1' : settings.host;
     return Uri(
       scheme: 'tg',
       host: 'proxy',
       queryParameters: <String, String>{
-        'server': settings.host,
+        'server': server,
         'port': settings.port.toString(),
         'secret': 'dd${settings.secret}',
       },

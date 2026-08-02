@@ -1,4 +1,4 @@
-package com.example.tg_proxy
+package com.mishaell.tg_proxy
 
 import android.os.Build
 import android.service.quicksettings.Tile

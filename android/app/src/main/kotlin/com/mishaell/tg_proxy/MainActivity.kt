@@ -1,4 +1,4 @@
-package com.example.tg_proxy
+package com.mishaell.tg_proxy
 
 import android.Manifest
 import android.content.Context
@@ -26,7 +26,7 @@ class MainActivity : FlutterActivity() {
     private var pendingLogExport: MethodChannel.Result? = null
 
     companion object {
-        private const val ACTION_TOGGLE_PROXY = "com.example.tg_proxy.TOGGLE_PROXY"
+        private const val ACTION_TOGGLE_PROXY = "com.mishaell.tg_proxy.TOGGLE_PROXY"
         private const val SHORTCUT_TOGGLE_PROXY = "toggle_proxy"
         private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1001
         private const val LOG_EXPORT_REQUEST_CODE = 1002
@@ -243,10 +243,29 @@ class MainActivity : FlutterActivity() {
         } else {
             Long.MAX_VALUE
         }
-        return mapOf(
+        val running = enabled && heartbeatAge <= HEARTBEAT_FRESH_MS
+        val status = mutableMapOf<String, Any>(
             "enabled" to enabled,
-            "running" to (enabled && heartbeatAge <= HEARTBEAT_FRESH_MS),
+            "running" to running,
             "lastHeartbeatMs" to lastHeartbeat
         )
+        if (enabled && !running) {
+            val lastError = File(filesDir, "proxy.log")
+                .takeIf { it.exists() }
+                ?.readLines()
+                ?.lastOrNull { it.contains(" ERROR ") }
+            if (lastError != null) {
+                status["error"] = lastError
+                if (
+                    lastError.contains("Errno 98") ||
+                    lastError.contains("address already in use", ignoreCase = true)
+                ) {
+                    status["errorCode"] = "PORT_IN_USE"
+                    status["errorPort"] = (ProxySettings.load(this)["port"] as? Number)
+                        ?.toInt() ?: 1443
+                }
+            }
+        }
+        return status
     }
 }

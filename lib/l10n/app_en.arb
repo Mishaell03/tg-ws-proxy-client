@@ -6,6 +6,10 @@
   "telegramOpenFailed": "Could not open Telegram",
 
   "connecting": "Connecting...",
+  "portAlreadyInUse": "Port {port} is already used by another application",
+  "@portAlreadyInUse": {
+    "placeholders": { "port": { "type": "int" } }
+  },
   "connected": "Connected",
   "disconnected": "Disconnected",
 
@@ -22,6 +26,9 @@
   "logsExported": "Logs exported",
   "retry": "Retry",
   "exportLogs": "Export logs",
+  "connectionLinkSection": "Connection link",
+  "copyConnectionLink": "Copy link",
+  "connectionLinkCopied": "Connection link copied",
 
   "listenerSection": "Listener",
   "hostLabel": "Host",

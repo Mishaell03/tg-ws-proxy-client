@@ -24,6 +24,11 @@ class AppLocalizationsRu extends AppLocalizations {
   String get connecting => 'Подключение...';
 
   @override
+  String portAlreadyInUse(int port) {
+    return 'Порт $port уже занят другим приложением';
+  }
+
+  @override
   String get connected => 'Подключено';
 
   @override
@@ -62,6 +67,15 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get exportLogs => 'Экспорт логов';
+
+  @override
+  String get connectionLinkSection => 'Ссылка подключения';
+
+  @override
+  String get copyConnectionLink => 'Копировать ссылку';
+
+  @override
+  String get connectionLinkCopied => 'Ссылка подключения скопирована';
 
   @override
   String get listenerSection => 'Слушатель';

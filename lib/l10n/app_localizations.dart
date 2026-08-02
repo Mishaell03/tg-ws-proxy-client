@@ -128,6 +128,12 @@ abstract class AppLocalizations {
   /// **'Connecting...'**
   String get connecting;
 
+  /// No description provided for @portAlreadyInUse.
+  ///
+  /// In en, this message translates to:
+  /// **'Port {port} is already used by another application'**
+  String portAlreadyInUse(int port);
+
   /// No description provided for @connected.
   ///
   /// In en, this message translates to:
@@ -205,6 +211,24 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Export logs'**
   String get exportLogs;
+
+  /// No description provided for @connectionLinkSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Connection link'**
+  String get connectionLinkSection;
+
+  /// No description provided for @copyConnectionLink.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy link'**
+  String get copyConnectionLink;
+
+  /// No description provided for @connectionLinkCopied.
+  ///
+  /// In en, this message translates to:
+  /// **'Connection link copied'**
+  String get connectionLinkCopied;
 
   /// No description provided for @listenerSection.
   ///

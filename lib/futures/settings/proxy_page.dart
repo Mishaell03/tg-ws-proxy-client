@@ -86,7 +86,12 @@ class _ProxyPageState extends State<ProxyPage> {
       _showMessage(_enabled ? t.settingsSavedRestarted : t.settingsSaved);
     } on PlatformException catch (error) {
       unawaited(ProxyController.log('Settings save failed: ${error.message}'));
-      _showMessage(error.message ?? error.code, error: true);
+      if (error.code == 'PORT_IN_USE') {
+        final port = (error.details as num?)?.toInt() ?? 0;
+        _showMessage(t.portAlreadyInUse(port), error: true);
+      } else {
+        _showMessage(error.message ?? error.code, error: true);
+      }
     } finally {
       if (mounted) setState(() => _saving = false);
     }

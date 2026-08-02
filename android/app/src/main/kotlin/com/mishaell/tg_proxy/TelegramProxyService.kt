@@ -1,4 +1,4 @@
-package com.example.tg_proxy
+package com.mishaell.tg_proxy
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -52,6 +52,8 @@ class TelegramProxyService : Service() {
     private var configJson: String? = null
     @Volatile
     private var manuallyStopped = false
+    @Volatile
+    private var startRequested = false
 
     private val restartProxy = Runnable { ensureProxyRunning() }
     private val networkChanged = Runnable { notifyPythonNetworkChanged() }
@@ -74,6 +76,7 @@ class TelegramProxyService : Service() {
         shuttingDown = false
         manuallyStopped = false
         processRestartScheduled = false
+        startRequested = false
         serviceStartedAtElapsedMs = SystemClock.elapsedRealtime()
         logLifecycle("onCreate")
         promoteToForeground()
@@ -90,12 +93,14 @@ class TelegramProxyService : Service() {
             ProxySettings.setEnabled(this, false)
             manuallyStopped = true
             shuttingDown = true
+            startRequested = false
             logLifecycle("Manual stop requested")
             stopSelf()
             return START_NOT_STICKY
         }
 
         intent?.getStringExtra(EXTRA_CONFIG_JSON)?.let { configJson = it }
+        startRequested = true
         shuttingDown = false
         manuallyStopped = false
         logLifecycle("onStartCommand action=${intent?.action ?: "none"}")
@@ -122,7 +127,7 @@ class TelegramProxyService : Service() {
 
     private fun ensureProxyRunning() {
         synchronized(stateLock) {
-            if (shuttingDown || proxyThread?.isAlive == true) {
+            if (!startRequested || shuttingDown || proxyThread?.isAlive == true) {
                 return
             }
 
@@ -622,6 +627,7 @@ class TelegramProxyService : Service() {
     override fun onDestroy() {
         logLifecycle("onDestroy")
         shuttingDown = true
+        startRequested = false
         mainHandler.removeCallbacks(restartProxy)
         mainHandler.removeCallbacks(healthCheck)
         mainHandler.removeCallbacks(networkChanged)
@@ -658,6 +664,21 @@ class TelegramProxyService : Service() {
             Log.w(TAG, "Unable to stop Python proxy cleanly", error)
         }
 
+        val threadToStop = synchronized(stateLock) { proxyThread }
+        if (threadToStop != null && threadToStop !== Thread.currentThread()) {
+            try {
+                threadToStop.join(PYTHON_STOP_TIMEOUT_MS)
+                if (threadToStop.isAlive) {
+                    logLifecycle("Python thread did not stop within ${PYTHON_STOP_TIMEOUT_MS}ms")
+                } else {
+                    logLifecycle("Python thread stopped and listener released")
+                }
+            } catch (error: InterruptedException) {
+                Thread.currentThread().interrupt()
+                Log.w(TAG, "Interrupted while waiting for Python proxy to stop", error)
+            }
+        }
+
         stopSilentAudioKeepAlive()
         releaseBackgroundLocks()
         super.onDestroy()
@@ -683,11 +704,12 @@ class TelegramProxyService : Service() {
     }
 
     companion object {
-        const val ACTION_RESTART_PROXY = "com.example.tg_proxy.RESTART_PROXY"
-        const val ACTION_WATCHDOG = "com.example.tg_proxy.WATCHDOG"
-        const val ACTION_START_PROXY = "com.example.tg_proxy.START_PROXY"
-        const val ACTION_STOP_PROXY = "com.example.tg_proxy.STOP_PROXY"
-        const val ACTION_RELOAD_PROXY = "com.example.tg_proxy.RELOAD_PROXY"
+        private const val PYTHON_STOP_TIMEOUT_MS = 3_000L
+        const val ACTION_RESTART_PROXY = "com.mishaell.tg_proxy.RESTART_PROXY"
+        const val ACTION_WATCHDOG = "com.mishaell.tg_proxy.WATCHDOG"
+        const val ACTION_START_PROXY = "com.mishaell.tg_proxy.START_PROXY"
+        const val ACTION_STOP_PROXY = "com.mishaell.tg_proxy.STOP_PROXY"
+        const val ACTION_RELOAD_PROXY = "com.mishaell.tg_proxy.RELOAD_PROXY"
         const val EXTRA_CONFIG_JSON = "proxy_config_json"
         private const val TAG = "TelegramProxyService"
         private const val PYTHON_MODULE = "proxy.tg_ws_proxy"

@@ -1,4 +1,4 @@
-package com.example.tg_proxy
+package com.mishaell.tg_proxy
 
 import android.content.Context
 import android.content.ComponentName

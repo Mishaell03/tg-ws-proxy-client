@@ -102,6 +102,23 @@ install(CODE "
 install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
   DESTINATION "${INSTALL_BUNDLE_DATA_DIR}" COMPONENT Runtime)
 
+# Bundle a private Python runtime and the proxy sources. The application always
+# invokes this interpreter by absolute path, so users do not need Python or
+# Docker installed and their PATH is never consulted.
+set(PROXY_RUNTIME_SOURCE "${CMAKE_SOURCE_DIR}/../assets/bin/python-runtime")
+set(PROXY_SOURCE "${CMAKE_SOURCE_DIR}/../tg-ws-proxy/proxy")
+if(NOT EXISTS "${PROXY_RUNTIME_SOURCE}/python.exe")
+  message(FATAL_ERROR "Portable Python runtime is missing: ${PROXY_RUNTIME_SOURCE}")
+endif()
+install(DIRECTORY "${PROXY_RUNTIME_SOURCE}/"
+  DESTINATION "${CMAKE_INSTALL_PREFIX}/proxy_runtime"
+  COMPONENT Runtime)
+install(DIRECTORY "${PROXY_SOURCE}"
+  DESTINATION "${CMAKE_INSTALL_PREFIX}/proxy_runtime"
+  COMPONENT Runtime
+  PATTERN "__pycache__" EXCLUDE
+  PATTERN "*.pyc" EXCLUDE)
+
 # Install the AOT library on non-Debug builds only.
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release

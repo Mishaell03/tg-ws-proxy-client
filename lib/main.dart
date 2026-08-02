@@ -1,10 +1,31 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:tg_proxy/core/conrtrollers/theme_controller.dart';
 import 'package:tg_proxy/futures/home/home_page.dart';
 import 'package:tg_proxy/l10n/app_localizations.dart';
+import 'package:window_manager/window_manager.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+    await windowManager.ensureInitialized();
+
+    const windowOptions = WindowOptions(
+      size: Size(500, 700),
+      minimumSize: Size(360, 500),
+      center: true,
+      title: 'Telegram proxy',
+    );
+
+    windowManager.waitUntilReadyToShow(windowOptions, () async {
+      await windowManager.show();
+      await windowManager.focus();
+    });
+  }
+
   runApp(TelegramProxyApp(themeController: ThemeController()..load()));
 }
 

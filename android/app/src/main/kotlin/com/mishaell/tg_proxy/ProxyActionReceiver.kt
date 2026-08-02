@@ -1,4 +1,4 @@
-package com.example.tg_proxy
+package com.mishaell.tg_proxy
 
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -11,6 +11,6 @@ class ProxyActionReceiver : BroadcastReceiver() {
     }
 
     companion object {
-        const val ACTION_TOGGLE_PROXY = "com.example.tg_proxy.ACTION_TOGGLE_PROXY"
+        const val ACTION_TOGGLE_PROXY = "com.mishaell.tg_proxy.ACTION_TOGGLE_PROXY"
     }
 }
