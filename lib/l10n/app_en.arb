@@ -59,5 +59,9 @@
   "workerDomainsLabel": "Worker domains",
   "forceTestDc": "Force test DC",
 
-  "saveSettings": "Save settings"
+  "saveSettings": "Save settings",
+
+  "systemSection": "System",
+  "launchAtStartup": "Launch at Windows startup",
+  "autostartError": "Failed to change autostart setting"
 }

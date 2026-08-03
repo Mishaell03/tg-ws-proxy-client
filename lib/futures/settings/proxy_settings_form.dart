@@ -1,8 +1,11 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:tg_proxy/core/components/app_theme.dart';
 import 'package:tg_proxy/core/components/theme.dart';
 import 'package:tg_proxy/core/conrtrollers/proxy_controller.dart';
+import 'package:tg_proxy/core/conrtrollers/win_autostart.dart';
 import 'package:tg_proxy/core/widgets/animation_button.dart';
 import 'package:tg_proxy/futures/settings/proxy_settings.dart';
 import 'package:tg_proxy/futures/settings/widgets/settings_section.dart';
@@ -40,6 +43,8 @@ class _ProxySettingsFormState extends State<ProxySettingsForm> {
   late bool _cfProxy;
   late bool _forceTestDc;
   bool _normalizingSecret = false;
+  bool _autostart = false;
+  bool _autostartLoading = true;
 
   @override
   void initState() {
@@ -58,6 +63,36 @@ class _ProxySettingsFormState extends State<ProxySettingsForm> {
     _port.addListener(_refreshConnectionLink);
     _secret.addListener(_refreshConnectionLink);
     _load(widget.settings);
+    _loadAutostart();
+  }
+
+  Future<void> _loadAutostart() async {
+    if (!Platform.isWindows) {
+      setState(() => _autostartLoading = false);
+      return;
+    }
+    final enabled = await isAutostartEnabledRaw();
+    if (mounted) {
+      setState(() {
+        _autostart = enabled;
+        _autostartLoading = false;
+      });
+    }
+  }
+
+  Future<void> _toggleAutostart(bool value) async {
+    final previous = _autostart;
+    setState(() => _autostart = value);
+    final success = await setAutostartRaw(value);
+    if (!success && mounted) {
+      setState(() => _autostart = previous);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(AppLocalizations.of(context)!.autostartError),
+          backgroundColor: context.colors.error,
+        ),
+      );
+    }
   }
 
   @override
@@ -249,6 +284,17 @@ class _ProxySettingsFormState extends State<ProxySettingsForm> {
               ),
             ],
           ),
+          if (Platform.isWindows && !_autostartLoading)
+            SettingsSection(
+              title: t.systemSection,
+              children: [
+                SettingsSwitchTile(
+                  title: t.launchAtStartup,
+                  value: _autostart,
+                  onChanged: _toggleAutostart,
+                ),
+              ],
+            ),
           SettingsSection(
             title: t.listenerSection,
             children: [

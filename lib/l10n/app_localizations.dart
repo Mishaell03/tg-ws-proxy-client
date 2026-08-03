@@ -349,6 +349,24 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Save settings'**
   String get saveSettings;
+
+  /// No description provided for @systemSection.
+  ///
+  /// In en, this message translates to:
+  /// **'System'**
+  String get systemSection;
+
+  /// No description provided for @launchAtStartup.
+  ///
+  /// In en, this message translates to:
+  /// **'Launch at Windows startup'**
+  String get launchAtStartup;
+
+  /// No description provided for @autostartError.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to change autostart setting'**
+  String get autostartError;
 }
 
 class _AppLocalizationsDelegate

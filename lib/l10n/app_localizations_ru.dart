@@ -139,4 +139,13 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get saveSettings => 'Сохранить настройки';
+
+  @override
+  String get systemSection => 'Система';
+
+  @override
+  String get launchAtStartup => 'Запускать при старте Windows';
+
+  @override
+  String get autostartError => 'Не удалось изменить настройку автозапуска';
 }

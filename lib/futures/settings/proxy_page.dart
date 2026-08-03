@@ -139,7 +139,14 @@ class _ProxyPageState extends State<ProxyPage> {
       appBar:
           // widget.embedded
           //     ? null
-          //     :
+          //     if (widget.embedded)
+          //                     Padding(
+          //                       padding: const EdgeInsets.only(bottom: 12),
+          //                       child: Text(
+          //                         t.settingsTitle,
+          //                         style: AppText.bold_24.copyWith(color: colors.text),
+          //                       ),
+          //                     ),
           AppBar(
             backgroundColor: colors.bg,
             foregroundColor: colors.text,
@@ -165,14 +172,6 @@ class _ProxyPageState extends State<ProxyPage> {
             : ListView(
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
                 children: [
-                  if (widget.embedded)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 12),
-                      child: Text(
-                        t.settingsTitle,
-                        style: AppText.bold_24.copyWith(color: colors.text),
-                      ),
-                    ),
                   SettingsStatusPanel(
                     enabled: _enabled,
                     running: _running,

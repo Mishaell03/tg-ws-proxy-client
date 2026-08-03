@@ -138,4 +138,13 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get saveSettings => 'Save settings';
+
+  @override
+  String get systemSection => 'System';
+
+  @override
+  String get launchAtStartup => 'Launch at Windows startup';
+
+  @override
+  String get autostartError => 'Failed to change autostart setting';
 }

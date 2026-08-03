@@ -5,8 +5,51 @@
 #include "flutter_window.h"
 #include "utils.h"
 
+namespace {
+
+// Uniquely identifies this app across the whole system. Use something
+// specific enough not to collide with other software (e.g. a GUID or your
+// reverse-domain identifier).
+constexpr wchar_t kSingleInstanceMutexName[] =
+    L"Local\\com_github_yourname_tgwsproxy_singleinstance";
+
+constexpr wchar_t kMainWindowTitle[] = L"tg_proxy";
+
+// Brings an already-running instance's window to the foreground. Restores
+// it first if it was minimized.
+void ActivateExistingInstance() {
+  HWND existing = ::FindWindowW(nullptr, kMainWindowTitle);
+  if (existing == nullptr) {
+    return;
+  }
+
+  if (::IsIconic(existing)) {
+    ::ShowWindow(existing, SW_RESTORE);
+  }
+  ::SetForegroundWindow(existing);
+}
+
+}  // namespace
+
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
+  // Enforce a single running instance. If the mutex already exists, another
+  // instance owns it — hand off focus to it and exit immediately without
+  // touching the job object, console, or COM.
+  HANDLE single_instance_mutex =
+      ::CreateMutexW(nullptr, TRUE, kSingleInstanceMutexName);
+  const bool already_running =
+      single_instance_mutex != nullptr &&
+      ::GetLastError() == ERROR_ALREADY_EXISTS;
+
+  if (already_running) {
+    ActivateExistingInstance();
+    if (single_instance_mutex != nullptr) {
+      ::CloseHandle(single_instance_mutex);
+    }
+    return EXIT_SUCCESS;
+  }
+
   // Keep desktop helper processes tied to the application lifetime. Python
   // inherits this job, and Windows terminates it if the UI process closes or
   // crashes, preventing an orphaned proxy from retaining the listen port.
@@ -44,7 +87,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   FlutterWindow window(project);
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(1280, 720);
-  if (!window.Create(L"tg_proxy", origin, size)) {
+  if (!window.Create(kMainWindowTitle, origin, size)) {
+    if (single_instance_mutex != nullptr) {
+      ::ReleaseMutex(single_instance_mutex);
+      ::CloseHandle(single_instance_mutex);
+    }
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(true);
@@ -58,6 +105,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   ::CoUninitialize();
   if (process_job != nullptr) {
     ::CloseHandle(process_job);
+  }
+  if (single_instance_mutex != nullptr) {
+    ::ReleaseMutex(single_instance_mutex);
+    ::CloseHandle(single_instance_mutex);
   }
   return EXIT_SUCCESS;
 }

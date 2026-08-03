@@ -59,5 +59,9 @@
   "workerDomainsLabel": "Домены Worker",
   "forceTestDc": "Принудительно тестовый DC",
 
-  "saveSettings": "Сохранить настройки"
+  "saveSettings": "Сохранить настройки",
+
+  "systemSection": "Система",
+  "launchAtStartup": "Запускать при старте Windows",
+  "autostartError": "Не удалось изменить настройку автозапуска"
 }

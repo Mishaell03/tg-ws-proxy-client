@@ -17,6 +17,8 @@ dependencies:
   url_launcher: ^6.3.2
   quick_actions: ^1.1.0
   window_manager: ^0.5.1
+  win32: ^5.5.0
+  ffi: ^2.1.0
 
 dev_dependencies:
   flutter_test:
