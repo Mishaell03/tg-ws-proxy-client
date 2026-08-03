@@ -14,9 +14,16 @@ import 'package:tg_proxy/futures/settings/widgets/settings_theme_button.dart';
 import 'package:tg_proxy/l10n/app_localizations.dart';
 
 class ProxyPage extends StatefulWidget {
-  const ProxyPage({required this.themeController, super.key});
+  const ProxyPage({
+    required this.themeController,
+    this.embedded = false,
+    this.onBack,
+    super.key,
+  });
 
   final ThemeController themeController;
+  final bool embedded;
+  final VoidCallback? onBack;
 
   @override
   State<ProxyPage> createState() => _ProxyPageState();
@@ -31,6 +38,7 @@ class _ProxyPageState extends State<ProxyPage> {
   String? _loadError;
 
   bool get _enabled => _status['enabled'] == true;
+
   bool get _running => _status['running'] == true;
 
   @override
@@ -128,31 +136,43 @@ class _ProxyPageState extends State<ProxyPage> {
 
     return Scaffold(
       backgroundColor: colors.bg,
-      appBar: AppBar(
-        backgroundColor: colors.bg,
-        foregroundColor: colors.text,
-        title: Text(
-          t.settingsTitle,
-          style: AppText.bold_24.copyWith(color: colors.text),
-        ),
-        actions: [
-          SettingsThemeButton(
-            themeMode: widget.themeController.themeMode,
-            tooltip: t.themeTooltip,
-            onPressed: () => widget.themeController.setThemeMode(
-              widget.themeController.nextVisibleMode(
-                MediaQuery.platformBrightnessOf(context),
-              ),
+      appBar:
+          // widget.embedded
+          //     ? null
+          //     :
+          AppBar(
+            backgroundColor: colors.bg,
+            foregroundColor: colors.text,
+            title: Text(
+              t.settingsTitle,
+              style: AppText.bold_24.copyWith(color: colors.text),
             ),
+            actions: [
+              SettingsThemeButton(
+                themeMode: widget.themeController.themeMode,
+                tooltip: t.themeTooltip,
+                onPressed: () => widget.themeController.setThemeMode(
+                  widget.themeController.nextVisibleMode(
+                    MediaQuery.platformBrightnessOf(context),
+                  ),
+                ),
+              ),
+            ],
           ),
-        ],
-      ),
       body: SafeArea(
         child: _settings == null
             ? _SettingsLoading(error: _loadError, onRetry: _load)
             : ListView(
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
                 children: [
+                  if (widget.embedded)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: Text(
+                        t.settingsTitle,
+                        style: AppText.bold_24.copyWith(color: colors.text),
+                      ),
+                    ),
                   SettingsStatusPanel(
                     enabled: _enabled,
                     running: _running,
@@ -191,9 +211,7 @@ class _SettingsLoading extends StatelessWidget {
     final colors = context.colors;
 
     if (error == null) {
-      return Center(
-        child: CircularProgressIndicator(color: colors.primary),
-      );
+      return Center(child: CircularProgressIndicator(color: colors.primary));
     }
 
     return Center(

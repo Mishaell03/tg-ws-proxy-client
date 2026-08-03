@@ -14,7 +14,7 @@ class ProxyTopBar extends StatelessWidget {
   final String title;
   final String subtitle;
   final String settingsTooltip;
-  final VoidCallback onSettings;
+  final VoidCallback? onSettings;
 
   @override
   Widget build(BuildContext context) {
@@ -46,11 +46,12 @@ class ProxyTopBar extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          _TopBarIcon(
-            icon: Icons.tune_rounded,
-            tooltip: settingsTooltip,
-            onPressed: onSettings,
-          ),
+          if (onSettings != null)
+            _TopBarIcon(
+              icon: Icons.tune_rounded,
+              tooltip: settingsTooltip,
+              onPressed: onSettings,
+            ),
         ],
       ),
     );

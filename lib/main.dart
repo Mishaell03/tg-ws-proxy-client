@@ -3,7 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:tg_proxy/core/conrtrollers/theme_controller.dart';
-import 'package:tg_proxy/futures/home/home_page.dart';
+import 'package:tg_proxy/futures/root/proxy_root_page.dart';
 import 'package:tg_proxy/l10n/app_localizations.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -15,7 +15,7 @@ Future<void> main() async {
 
     const windowOptions = WindowOptions(
       size: Size(500, 700),
-      minimumSize: Size(360, 500),
+      minimumSize: Size(360, 560),
       center: true,
       title: 'Telegram proxy',
     );
@@ -50,7 +50,7 @@ class TelegramProxyApp extends StatelessWidget {
           GlobalCupertinoLocalizations.delegate,
         ],
         supportedLocales: const [Locale('en'), Locale('ru')],
-        home: ProxyPage(themeController: themeController),
+        home: ProxyRootPage(themeController: themeController),
       ),
     );
   }

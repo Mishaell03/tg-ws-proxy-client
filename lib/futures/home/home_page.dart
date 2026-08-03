@@ -9,15 +9,21 @@ import 'package:tg_proxy/futures/home/widgets/network_background.dart';
 import 'package:tg_proxy/futures/home/widgets/proxy_central_orb.dart';
 import 'package:tg_proxy/futures/home/widgets/proxy_status_label.dart';
 import 'package:tg_proxy/futures/home/widgets/proxy_top_bar.dart';
-import 'package:tg_proxy/futures/settings/proxy_page.dart' as settings;
 import 'package:tg_proxy/futures/settings/proxy_settings.dart'
     as settings_model;
 import 'package:tg_proxy/l10n/app_localizations.dart';
 
 class ProxyPage extends StatefulWidget {
-  const ProxyPage({required this.themeController, super.key});
+  const ProxyPage({
+    required this.themeController,
+    this.embedded = false,
+    this.onSettings,
+    super.key,
+  });
 
   final ThemeController themeController;
+  final bool embedded;
+  final VoidCallback? onSettings;
 
   @override
   State<ProxyPage> createState() => _ProxyPageState();
@@ -76,9 +82,9 @@ class _ProxyPageState extends State<ProxyPage> with TickerProviderStateMixin {
         _running = status['running'] == true;
       });
       final error = status['errorCode'] == 'PORT_IN_USE'
-          ? AppLocalizations.of(context)!.portAlreadyInUse(
-              (status['errorPort'] as num?)?.toInt() ?? 1443,
-            )
+          ? AppLocalizations.of(
+              context,
+            )!.portAlreadyInUse((status['errorPort'] as num?)?.toInt() ?? 1443)
           : status['error']?.toString();
       if (error != null && error.isNotEmpty && error != _lastReportedError) {
         _lastReportedError = error;
@@ -115,12 +121,7 @@ class _ProxyPageState extends State<ProxyPage> with TickerProviderStateMixin {
   }
 
   void _openSettings() {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) =>
-            settings.ProxyPage(themeController: widget.themeController),
-      ),
-    );
+    widget.onSettings?.call();
   }
 
   Future<void> _openTelegram() async {
@@ -181,7 +182,7 @@ class _ProxyPageState extends State<ProxyPage> with TickerProviderStateMixin {
                   title: t.appTitle,
                   subtitle: t.appSubtitle,
                   settingsTooltip: t.settingsTitle,
-                  onSettings: _openSettings,
+                  onSettings: widget.embedded ? null : _openSettings,
                 ),
                 const Spacer(flex: 2),
                 ProxyCentralOrb(
